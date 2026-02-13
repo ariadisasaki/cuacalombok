@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cuaca & Bencana Lombok</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#d32f2f">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+body{margin:0;font-family:sans-serif;background:#111;color:white}
+.container{max-width:420px;margin:auto;padding:15px}
+.card{background:#222;padding:15px;border-radius:15px;margin-bottom:15px}
+button{width:100%;padding:15px;background:red;color:white;border:none;border-radius:12px}
+canvas{width:100%}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<button id="activateAlarm">🔴 Aktifkan Mode Siaga</button>
+
+<div class="card">
+<h3>🌤 Cuaca Lombok</h3>
+<div id="temp">--°C</div>
+<div id="cond">Memuat...</div>
+<canvas id="chart" height="120"></canvas>
+</div>
+
+<div class="card">
+<h3>🛰 Radar</h3>
+<img id="radar" style="width:100%;border-radius:12px">
+</div>
+
+<div class="card">
+<h3>🌊 Gelombang Laut</h3>
+<div id="wave">Memuat...</div>
+</div>
+
+<div class="card">
+<h3>🗺 Peta</h3>
+<div id="map" style="height:250px;border-radius:12px;"></div>
+</div>
+
+<div class="card">
+<h3>🔴 Gempa Terkini</h3>
+<div id="gempa">Memuat...</div>
+</div>
+
+<audio id="alarmSound" loop>
+<source src="https://actions.google.com/sounds/v1/alarms/emergency_siren.ogg" type="audio/ogg">
+</audio>
+
+</div>
+
+<script>
+const WORKER_URL="https://cuacalombok.ariadishut.workers.dev/";
+let userLat=0,userLon=0;
+let alarmEnabled=false;
+const alarm=document.getElementById("alarmSound");
+
+// Tombol aktifkan alarm
+document.getElementById("activateAlarm").onclick = () => {
+  alarmEnabled=true;
+  alarm.play().then(()=>{alarm.pause();alarm.currentTime=0;alert("Mode Siaga Aktif")});
+};
+
+// Map dan GPS
+const map = L.map("map").setView([-8.6,116.3],9);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
+
+navigator.geolocation?.getCurrentPosition(pos=>{
+  userLat=pos.coords.latitude;
+  userLon=pos.coords.longitude;
+  map.setView([userLat,userLon],10);
+  L.marker([userLat,userLon]).addTo(map).bindPopup("Lokasi Anda");
+});
+
+// Fungsi jarak Haversine
+function getDistance(lat1, lon1, lat2, lon2){
+ const R=6371;
+ const dLat=(lat2-lat1)*Math.PI/180;
+ const dLon=(lon2-lon1)*Math.PI/180;
+ const a=Math.sin(dLat/2)**2+
+ Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+ Math.sin(dLon/2)**2;
+ return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+// Alarm
+function triggerAlarm(msg){
+ if(!alarmEnabled) return;
+ alarm.volume=1;
+ alarm.play();
+ navigator.vibrate?.([500,500,500]);
+ alert("🚨 DARURAT\n"+msg);
+}
+
+// Load cuaca
+async function loadCuaca(){
+ const res = await fetch(WORKER_URL+"?type=cuaca");
+ const text = await res.text();
+ const xml = new DOMParser().parseFromString(text,"application/xml");
+
+ const area = xml.getElementsByTagName("area")[0];
+ if(!area){console.error("Tag <area> tidak ditemukan"); return;}
+ const params = area.getElementsByTagName("parameter");
+ let temps = [], cond = "";
+
+ for(let p of params){
+   if(p.getAttribute("id")==="t"){
+     const v=p.getElementsByTagName("value");
+     for(let i=0;i<8;i++) temps.push(parseInt(v[i].textContent));
+   }
+   if(p.getAttribute("id")==="weather"){
+     cond = p.getElementsByTagName("value")[0].textContent;
+   }
+ }
+
+ document.getElementById("temp").innerText=temps[0]+"°C";
+ document.getElementById("cond").innerText=cond;
+ drawChart(temps);
+}
+
+// Grafik suhu
+function drawChart(data){
+ const c=document.getElementById("chart");
+ const ctx=c.getContext("2d");
+ ctx.clearRect(0,0,c.width,c.height);
+ const max=Math.max(...data);
+ const min=Math.min(...data);
+ const step=c.width/(data.length-1);
+ ctx.beginPath();
+ data.forEach((t,i)=>{
+   const x=i*step;
+   const y=c.height-((t-min)/(max-min))*c.height;
+   i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+ });
+ ctx.strokeStyle="red";
+ ctx.stroke();
+}
+
+// Radar looping
+function loopRadar(){
+ setInterval(()=>{
+   document.getElementById("radar").src = WORKER_URL+"?type=radar&t="+Date.now();
+ },60000);
+}
+document.getElementById("radar").src = WORKER_URL+"?type=radar&t="+Date.now();
+
+// Gelombang laut
+async function loadWave(){
+ const res = await fetch(WORKER_URL+"?type=maritim");
+ const text = await res.text();
+ // Parsing XML jika mau detail tinggi gelombang
+ document.getElementById("wave").innerText="Data gelombang terbaru tersedia (BMKG)";
+}
+
+// Gempa terkini
+async function loadGempa(){
+ const res = await fetch(WORKER_URL+"?type=gempa");
+ const text = await res.text();
+ const xml = new DOMParser().parseFromString(text,"application/xml");
+ const g = xml.getElementsByTagName("gempa")[0];
+ if(!g){console.error("Tag <gempa> tidak ditemukan"); return;}
+
+ const mag = g.getElementsByTagName("Magnitude")[0].textContent;
+ const wilayah = g.getElementsByTagName("Wilayah")[0].textContent;
+ const coords = g.getElementsByTagName("Coordinates")[0].textContent.split(",");
+ const lat = parseFloat(coords[0]);
+ const lon = parseFloat(coords[1]);
+
+ document.getElementById("gempa").innerHTML = "M"+mag+" - "+wilayah;
+
+ L.circleMarker([lat,lon],{radius:8,color:"red"}).addTo(map);
+
+ const dist = getDistance(userLat,userLon,lat,lon);
+ if(dist <= 200 && parseFloat(mag)>=5){
+   triggerAlarm("Gempa M"+mag+" dalam radius 200km");
+ }
+}
+
+// Load semua
+loadCuaca();
+loadWave();
+loadGempa();
+loopRadar();
+setInterval(loadGempa,60000);
+
+// PWA service worker
+if("serviceWorker" in navigator){
+ navigator.serviceWorker.register("sw.js");
+}
+</script>
+
+</body>
+</html>
